@@ -12,18 +12,18 @@ ODDS_API_KEY = os.getenv("ODDS_API_KEY")
 
 # === HORA ESPAÑA + FECHA ===
 def spain_datetime(utc_dt):
-    spain_offset = timedelta(hours=1)  # CET en noviembre
+    spain_offset = timedelta(hours=1)  # CET noviembre
     spain_dt = utc_dt + spain_offset
     return spain_dt.strftime("%H:%M"), spain_dt.strftime("%d/%m")
 
-# === FILTRO: HOY/MAÑANA (48h) ===
+# === FILTRO: HOY/72h ===
 def now_utc():
     return datetime.now(timezone.utc)
 
-def is_today_or_next(game_time):
+def is_within_72h(game_time):
     now = now_utc()
-    next_48h = now + timedelta(hours=48)
-    return now < game_time <= next_48h.replace(hour=23, minute=59, second=59)
+    next_72h = now + timedelta(hours=72)
+    return now < game_time <= next_72h.replace(hour=23, minute=59, second=59)
 
 # === DISTRIBUCIÓN ESCALADA ===
 def distribute_picks(picks):
@@ -79,7 +79,7 @@ def get_picks():
                 if not commence:
                     continue
                 game_time = datetime.fromisoformat(commence.replace('Z', '+00:00'))
-                if not is_today_or_next(game_time):
+                if not is_within_72h(game_time):
                     continue
 
                 home, away = game['home_team'], game['away_team']
@@ -127,7 +127,12 @@ def get_picks():
 def order_by_importance(matches):
     if not matches:
         return []
-    prompt = "Ordena estos partidos de fútbol por importancia (1 = más importante, 10 = menos). Basado en liga (Champions > Europa > Liga nacional), equipos (Barcelona, Real Madrid, Man City, Newcastle prioritarios), y rivalidad. Lista numerada:\n\n"
+    prompt = (
+        "Ordena estos partidos de fútbol por importancia (1 = más importante, 10 = menos). "
+        "Prioriza: Champions League > Europa League > Liga nacional. "
+        "Equipos top: Barcelona, Real Madrid, Man City, Newcastle, Liverpool, Arsenal, Bayern, Inter, Juventus, PSG, AC Milan. "
+        "Rivalidad y tamaño. Lista numerada con nombre del partido:\n\n"
+    )
     for m in matches:
         prompt += f"- {m['match']} (1: {m['odds_1']}, X: {m['odds_x']}, 2: {m['odds_2']})\n"
     try:
@@ -136,7 +141,10 @@ def order_by_importance(matches):
             messages=[{"role": "user", "content": prompt}],
             max_tokens=200
         )
-        ordered_names = [line.strip('- ').strip() for line in resp.choices[0].message.content.strip().split('\n') if line.strip('- ') and line.strip('- ').split()[0].isdigit()]
+        ordered_names = []
+        for line in resp.choices[0].message.content.strip().split('\n'):
+            if line.strip().startswith(tuple(str(i) for i in range(1, 11))):
+                ordered_names.append(line.split('.', 1)[1].strip().split(' (')[0].strip())
         ordered_matches = []
         for name in ordered_names:
             for match in matches:
@@ -146,9 +154,9 @@ def order_by_importance(matches):
         return ordered_matches[:10]
     except Exception as e:
         print(f"Error GPT orden: {e}")
-        return matches  # Fallback a original
+        return matches
 
-# === GPT RAZÓN + FAVORITO ===
+# === GPT RAZÓN ===
 def gpt_reason(pick):
     try:
         resp = openai.chat.completions.create(
@@ -175,11 +183,10 @@ async def send_picks():
     # Ordenar por importancia con GPT
     ordered_picks = order_by_importance(raw_picks)
     free, premium_ex = distribute_picks(ordered_picks)
-    now = now_utc().strftime("%H:%M UTC")
-    time_spain, date_spain = spain_datetime(now_utc())
+    now_time, now_date = spain_datetime(now_utc())
 
     # FREE
-    msg_free = f"🔥 **PRONÓSTICOS GRATIS** {now} UTC | {date_spain} | {len(free)} picks 🔥\n\n"
+    msg_free = f"🔥 **PRONÓSTICOS GRATIS** {now_time} UTC | {now_date} | {len(free)} picks 🔥\n\n"
     for p in free:
         time_s, date_s = spain_datetime(p['utc_time'])
         msg_free += f"⚽ **{p['match']}** ({date_s})\n"
@@ -189,7 +196,7 @@ async def send_picks():
     msg_free += "💎 *18+ | Solo entretenimiento | Apuesta con responsabilidad* 💎"
 
     # PREMIUM
-    msg_prem = f"💎 **PRONÓSTICOS PREMIUM** (Acceso anticipado) | {date_spain} | {len(premium_ex)} exclusivos 💎\n\n"
+    msg_prem = f"💎 **PRONÓSTICOS PREMIUM** (Acceso anticipado) | {now_date} | {len(premium_ex)} exclusivos 💎\n\n"
     for i, p in enumerate(ordered_picks, 1):
         time_s, date_s = spain_datetime(p['utc_time'])
         if i > len(free):
