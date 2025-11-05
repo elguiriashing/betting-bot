@@ -52,8 +52,9 @@ def get_picks():
         "soccer_germany_bundesliga",
         "soccer_italy_serie_a",
         "soccer_france_ligue_one",
-        "soccer_champions_league",  # FIX: Key correcto para Champions
-        "soccer_europa_league"      # FIX: Key correcto para Europa
+        "soccer_uefa_champs_league",  # FIX: Key correcto para Champions
+        "soccer_uefa_europa_conference_league"      # FIX: Key correcto para Europa
+        "soccer_fifa_world_cup_qualifiers_europe"
     ]
     seen_matches = set()
     all_matches = []
