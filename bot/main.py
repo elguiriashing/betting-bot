@@ -52,8 +52,8 @@ def get_picks():
         "soccer_germany_bundesliga",
         "soccer_italy_serie_a",
         "soccer_france_ligue_one",
-        "soccer_champions_league",
-        "soccer_europa_league"
+        "soccer_uefa_champions_league",  # FIX: ID correcto para Champions
+        "soccer_uefa_europa_league"      # FIX: ID correcto para Europa
     ]
     seen_matches = set()
     all_matches = []
@@ -130,7 +130,7 @@ def order_by_importance(matches):
     prompt = (
         "Ordena estos partidos de fútbol por importancia (1 = más importante, 10 = menos). "
         "Prioriza: Champions League > Europa League > Liga nacional. "
-        "Equipos top: Barcelona, Real Madrid, Man City, Newcastle, Liverpool, Arsenal, Bayern, Inter, Juventus, PSG, AC Milan. "
+        "Equipos top PRIORIDAD ALTA: Barcelona, Real Madrid, Man City, Newcastle, Liverpool, Arsenal, Bayern, Inter, Juventus, PSG, AC Milan. "
         "Rivalidad y tamaño. Lista numerada con nombre del partido:\n\n"
     )
     for m in matches:
