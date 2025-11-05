@@ -16,14 +16,25 @@ def spain_datetime(utc_dt):
     spain_dt = utc_dt + spain_offset
     return spain_dt.strftime("%H:%M"), spain_dt.strftime("%d/%m")
 
-# === FILTRO: HOY/72h ===
+# === FILTRO: HOY/MAÑANA ===
 def now_utc():
     return datetime.now(timezone.utc)
 
-def is_within_72h(game_time):
+def is_today_or_tomorrow(game_time):
     now = now_utc()
-    next_72h = now + timedelta(hours=72)
-    return now < game_time <= next_72h.replace(hour=23, minute=59, second=59)
+    # Convertir a hora España para comparar días correctamente
+    now_spain = now + timedelta(hours=1)
+    game_spain = game_time + timedelta(hours=1)
+    
+    # Día actual y siguiente en España
+    today_spain = now_spain.date()
+    tomorrow_spain = today_spain + timedelta(days=1)
+    day_after_spain = today_spain + timedelta(days=2)
+    
+    game_date = game_spain.date()
+    
+    # Incluir hoy, mañana y pasado mañana
+    return game_date in [today_spain, tomorrow_spain, day_after_spain]
 
 # === DISTRIBUCIÓN ESCALADA ===
 def distribute_picks(picks):
@@ -52,9 +63,8 @@ def get_picks():
         "soccer_germany_bundesliga",
         "soccer_italy_serie_a",
         "soccer_france_ligue_one",
-        "soccer_uefa_champs_league",  # FIX: Key correcto para Champions
-        "soccer_uefa_europa_conference_league"      # FIX: Key correcto para Europa
-        "soccer_fifa_world_cup_qualifiers_europe"
+        "soccer_uefa_champs_league",
+        "soccer_uefa_europa_league"
     ]
     seen_matches = set()
     all_matches = []
@@ -80,7 +90,13 @@ def get_picks():
                 if not commence:
                     continue
                 game_time = datetime.fromisoformat(commence.replace('Z', '+00:00'))
-                if not is_within_72h(game_time):
+                
+                # Debug: imprimir todos los juegos
+                time_s, date_s = spain_datetime(game_time)
+                print(f"Juego encontrado: {game['home_team']} vs {game['away_team']} - {date_s} {time_s} ESP")
+                
+                if not is_today_or_tomorrow(game_time):
+                    print(f"  → Filtrado (fuera de rango)")
                     continue
 
                 home, away = game['home_team'], game['away_team']
@@ -116,13 +132,14 @@ def get_picks():
                         "book": site['title'],
                         "utc_time": game_time
                     })
+                    print(f"  → Añadido: {match_key}")
                     break
 
         except Exception as e:
             print(f"Error API {sport}: {e}")
 
     all_matches.sort(key=lambda x: x['utc_time'])
-    return all_matches[:10]
+    return all_matches[:15]  # Aumentado a 15 para tener más margen
 
 # === GPT: ORDENAR POR IMPORTANCIA ===
 def order_by_importance(matches):
