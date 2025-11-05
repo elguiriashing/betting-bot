@@ -10,11 +10,11 @@ openai.api_key = os.getenv("OPENAI_API_KEY")
 bot = Bot(token=os.getenv("TELEGRAM_BOT_TOKEN"))
 ODDS_API_KEY = os.getenv("ODDS_API_KEY")
 
-# === HORA ESPAÑA (CET/CEST) ===
-def spain_time(utc_dt):
-    # España: UTC+1 (invierno), UTC+2 (verano) — simplificado a +1 (noviembre)
+# === HORA ESPAÑA + FECHA ===
+def spain_datetime(utc_dt):
     spain_offset = timedelta(hours=1)  # CET en noviembre
-    return (utc_dt + spain_offset).strftime("%H:%M")
+    spain_dt = utc_dt + spain_offset
+    return spain_dt.strftime("%H:%M"), spain_dt.strftime("%d/%m")
 
 # === FILTRO: HOY/MAÑANA (48h) ===
 def now_utc():
@@ -38,9 +38,9 @@ def distribute_picks(picks):
     elif total == 8: return picks[:5], picks[5:8]
     elif total == 9: return picks[:6], picks[6:9]
     elif total >= 10: return picks[:6], picks[6:10]
-    return picks[:6], picks[6:10]
+    return picks[:total], []
 
-# === SCRAPER: 1X2 + 1 POR PARTIDO + SIN DUPLICADOS ===
+# === SCRAPER: 1X2 + 1 POR PARTIDO ===
 def get_picks():
     if not ODDS_API_KEY:
         print("ODDS_API_KEY no configurada")
@@ -56,7 +56,7 @@ def get_picks():
         "soccer_europa_league"
     ]
     seen_matches = set()
-    all_picks = []
+    all_matches = []
 
     for sport in sports:
         url = f"https://api.the-odds-api.com/v4/sports/{sport}/odds/"
@@ -85,10 +85,9 @@ def get_picks():
                 home, away = game['home_team'], game['away_team']
                 match_key = f"{home} vs {away}"
                 if match_key in seen_matches:
-                    continue  # 1 por partido
+                    continue
                 seen_matches.add(match_key)
 
-                # Buscar 1X2 en cualquier bookie
                 for site in game.get('bookmakers', []):
                     if site['key'] not in ['bet365', 'bwin', 'unibet', 'pinnacle']:
                         continue
@@ -96,7 +95,6 @@ def get_picks():
                     if len(outcomes) < 3:
                         continue
 
-                    # Orden: Home, Draw, Away
                     odds = {'home': None, 'draw': None, 'away': None}
                     for o in outcomes:
                         if o['name'] == home:
@@ -109,31 +107,55 @@ def get_picks():
                     if None in odds.values():
                         continue
 
-                    all_picks.append({
+                    all_matches.append({
                         "match": match_key,
                         "odds_1": odds['home'],
                         "odds_x": odds['draw'],
                         "odds_2": odds['away'],
                         "book": site['title'],
-                        "time_spain": spain_time(game_time),
                         "utc_time": game_time
                     })
-                    break  # Solo 1 bookie por partido
+                    break
 
         except Exception as e:
             print(f"Error API {sport}: {e}")
 
-    all_picks.sort(key=lambda x: x['utc_time'])
-    return all_picks[:10]
+    all_matches.sort(key=lambda x: x['utc_time'])
+    return all_matches[:10]
 
-# === GPT: QUIÉN GANA + RAZÓN ===
+# === GPT: ORDENAR POR IMPORTANCIA ===
+def order_by_importance(matches):
+    if not matches:
+        return []
+    prompt = "Ordena estos partidos de fútbol por importancia (1 = más importante, 10 = menos). Basado en liga (Champions > Europa > Liga nacional), equipos (Barcelona, Real Madrid, Man City, Newcastle prioritarios), y rivalidad. Lista numerada:\n\n"
+    for m in matches:
+        prompt += f"- {m['match']} (1: {m['odds_1']}, X: {m['odds_x']}, 2: {m['odds_2']})\n"
+    try:
+        resp = openai.chat.completions.create(
+            model="gpt-4o-mini",
+            messages=[{"role": "user", "content": prompt}],
+            max_tokens=200
+        )
+        ordered_names = [line.strip('- ').strip() for line in resp.choices[0].message.content.strip().split('\n') if line.strip('- ') and line.strip('- ').split()[0].isdigit()]
+        ordered_matches = []
+        for name in ordered_names:
+            for match in matches:
+                if match['match'] in name:
+                    ordered_matches.append(match)
+                    break
+        return ordered_matches[:10]
+    except Exception as e:
+        print(f"Error GPT orden: {e}")
+        return matches  # Fallback a original
+
+# === GPT RAZÓN + FAVORITO ===
 def gpt_reason(pick):
     try:
         resp = openai.chat.completions.create(
             model="gpt-4o-mini",
             messages=[{
                 "role": "user",
-                "content": f"Explica en 1 frase corta por qué {pick['match']} terminará con victoria local, empate o visitante. Incluye quién es favorito. Solo texto plano, español."
+                "content": f"Explica en 1 frase corta por qué {pick['match']} terminará con victoria local, empate o visitante. Incluye quién es favorito. Español, profesional, texto plano."
             }],
             max_tokens=60
         )
@@ -145,32 +167,40 @@ def gpt_reason(pick):
 
 # === ENVÍO ===
 async def send_picks():
-    picks = get_picks()
-    if len(picks) == 0:
+    raw_picks = get_picks()
+    if len(raw_picks) == 0:
         print("NO HAY PARTIDOS HOY → NO ENVÍO")
         return
 
-    free, premium_ex = distribute_picks(picks)
+    # Ordenar por importancia con GPT
+    ordered_picks = order_by_importance(raw_picks)
+    free, premium_ex = distribute_picks(ordered_picks)
     now = now_utc().strftime("%H:%M UTC")
+    time_spain, date_spain = spain_datetime(now_utc())
 
     # FREE
-    msg_free = f"**PRONÓSTICOS GRATIS** {now} ({len(free)} picks)\n\n"
+    msg_free = f"🔥 **PRONÓSTICOS GRATIS** {now} UTC | {date_spain} | {len(free)} picks 🔥\n\n"
     for p in free:
-        msg_free += f"• **{p['match']}** → 1 ({p['odds_1']}) X ({p['odds_x']}) 2 ({p['odds_2']}) ({p['book']}) | {p['time_spain']} ESP\n"
+        time_s, date_s = spain_datetime(p['utc_time'])
+        msg_free += f"⚽ **{p['match']}** ({date_s})\n"
+        msg_free += f"→ 1️⃣ **{p['odds_1']}** | X️⃣ **{p['odds_x']}** | 2️⃣ **{p['odds_2']}** ({p['book']})\n"
+        msg_free += f"⏰ **{time_s} ESP**\n"
         msg_free += f"_{gpt_reason(p)}_\n\n"
-    msg_free += "*18+ | Solo entretenimiento | Apuesta con responsabilidad*"
+    msg_free += "💎 *18+ | Solo entretenimiento | Apuesta con responsabilidad* 💎"
 
     # PREMIUM
-    msg_prem = f"**PRONÓSTICOS PREMIUM** (Acceso anticipado) ({len(premium_ex)} exclusivos)\n\n"
-    for i, p in enumerate(picks, 1):
+    msg_prem = f"💎 **PRONÓSTICOS PREMIUM** (Acceso anticipado) | {date_spain} | {len(premium_ex)} exclusivos 💎\n\n"
+    for i, p in enumerate(ordered_picks, 1):
+        time_s, date_s = spain_datetime(p['utc_time'])
         if i > len(free):
-            msg_prem += f"EXCLUSIVO PREMIUM: **{p['match']}** → 1 ({p['odds_1']}) X ({p['odds_x']}) 2 ({p['odds_2']}) ({p['book']}) | {p['time_spain']} ESP\n"
-        else:
-            msg_prem += f"• **{p['match']}** → 1 ({p['odds_1']}) X ({p['odds_x']}) 2 ({p['odds_2']}) ({p['book']}) | {p['time_spain']} ESP\n"
+            msg_prem += f"🔒 **EXCLUSIVO PREMIUM:**\n"
+        msg_prem += f"⚽ **{p['match']}** ({date_s})\n"
+        msg_prem += f"→ 1️⃣ **{p['odds_1']}** | X️⃣ **{p['odds_x']}** | 2️⃣ **{p['odds_2']}** ({p['book']})\n"
+        msg_prem += f"⏰ **{time_s} ESP**\n"
         msg_prem += f"_{gpt_reason(p)}_\n\n"
-    msg_prem += "Suscríbete: 1€ por 7 días → @EliteApuestas_1aBot"
+    msg_prem += "🚀 **Suscríbete YA:** 1€ por 7 días → @EliteApuestas_1aBot 🚀"
 
-    # ENVÍO SEGURO
+    # ENVÍO FREE
     try:
         await bot.send_message(chat_id=os.getenv("FREE_CHANNEL"), text=msg_free, parse_mode="Markdown")
         print(f"GRATIS: {len(free)} picks")
@@ -178,6 +208,7 @@ async def send_picks():
         print(f"Error GRATIS: {e}")
         await bot.send_message(chat_id=os.getenv("FREE_CHANNEL"), text=msg_free.replace("**", "").replace("_", ""))
 
+    # ENVÍO PREMIUM
     try:
         await bot.send_message(chat_id=os.getenv("PREMIUM_CHANNEL"), text=msg_prem, parse_mode="Markdown")
         print(f"PREMIUM: {len(premium_ex)} exclusivos")
